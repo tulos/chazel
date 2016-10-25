@@ -12,32 +12,30 @@
            [com.hazelcast.client.impl HazelcastClientProxy]
            [com.hazelcast.client.config ClientConfig]
            [com.hazelcast.config GroupConfig]
-           [com.hazelcast.map.listener EntryAddedListener 
-                                       EntryRemovedListener 
+           [com.hazelcast.map.listener EntryAddedListener
+                                       EntryRemovedListener
                                        EntryEvictedListener
                                        EntryUpdatedListener]
            [com.hazelcast.instance HazelcastInstanceProxy]
            [org.hface InstanceStatsTask]))
 
-(defn new-instance 
-  ([] (new-instance nil))
+(defn instance
+  ([] (instance nil))
   ([conf]
-    (Hazelcast/newHazelcastInstance conf)))
+    (Hazelcast/getOrCreateHazelcastInstance conf)))
 
 (defn all-instances []
   (Hazelcast/getAllHazelcastInstances))
 
-(defn hz-instance 
-  ([] 
-     (or (first (all-instances))
-         (new-instance)))
-  ([conf]
-    (Hazelcast/getOrCreateHazelcastInstance conf)))
+(defn instance-active? [instance]
+  (-> instance
+      (.getLifecycleService)
+      (.isRunning)))
 
 (defn client-config [{:keys [hosts retry-ms retry-max group-name group-password]}]
   (let [config (ClientConfig.)
         groupConfig (GroupConfig. group-name group-password)]
-    (doto config 
+    (doto config
       (.getNetworkConfig)
       (.addAddress (into-array hosts))
       (.setConnectionAttemptPeriod retry-ms)
@@ -45,12 +43,7 @@
       (.setGroupConfig config groupConfig)
     config))
 
-(defn instance-active? [instance]
-  (-> instance
-      (.getLifecycleService)
-      (.isRunning)))
-
-(defonce 
+(defonce
   ;; "will only be used if no config is provided"
   default-client-config
   {:hosts ["127.0.0.1"]
@@ -59,103 +52,78 @@
    :group-name "dev"
    :group-password "dev-pass"})                        ;; 720000 * 5000 = one hour
 
-(defonce c-instance (atom nil))
-
-(defn client-instance 
+(defn client-instance
   ([] (client-instance default-client-config))
   ([conf]
-    (let [ci @c-instance]
-      (if (and ci (instance-active? ci))
-        ci
-        (try
-          (info "connecting to: " conf)
-          (reset! c-instance
-                  (HazelcastClient/newHazelcastClient (client-config conf)))
-          (catch Throwable t
-            (warn "could not create hazelcast a client instance: " t)))))))
-
-(defn client-instance? []
-  (let [ci @c-instance]
-    (and ci (instance-active? ci))))
-
-;; creates a demo cluster
-(defn cluster-of [nodes & {:keys [conf]}]
-  (repeatedly nodes #(new-instance conf)))
+   (try
+     (info "connecting to: " conf)
+     (HazelcastClient/newHazelcastClient (client-config conf))
+     (catch Throwable t
+       (warn "could not create hazelcast a client instance: " t)))))
 
 (defn distributed-objects [hz-instance]
   (.getDistributedObjects hz-instance))
 
 (defn find-all-maps
-  ([] (find-all-maps (hz-instance)))
-  ([instance]
-  (filter #(instance? com.hazelcast.core.IMap %) 
-          (distributed-objects instance))))
+  [instance]
+  (filter #(instance? com.hazelcast.core.IMap %)
+          (distributed-objects instance)))
 
-(defn map-sizes 
-  ([] (map-sizes (hz-instance)))
-  ([instance]
+(defn map-sizes
+  [instance]
   (reduce (fn [m o]
             (if (instance? com.hazelcast.core.IMap o)
               (assoc m (.getName o) {:size (.size o)})
-              m)) {} (distributed-objects instance))))
+              m)) {} (distributed-objects instance)))
 
-(defn cluster-stats 
-  ([] (cluster-stats (hz-instance)))
-  ([instance]
-   (try
-     (as-> instance $
-           (.getExecutorService $ "stats-exec-service")
-           (.submitToAllMembers $ (InstanceStatsTask.))
-           (for [[m f] $]
-             [(str m) (parse-string @f true)])
-           (into {} $))
-     (catch Throwable t
-       (warn "could not submit a \"collecting stats\" task via hazelcast instance [" instance "]: " (.getMessage t))))))
+(defn cluster-stats
+  [instance]
+  (try
+    (as-> instance $
+      (.getExecutorService $ "stats-exec-service")
+      (.submitToAllMembers $ (InstanceStatsTask.))
+      (for [[m f] $]
+        [(str m) (parse-string @f true)])
+      (into {} $))
+    (catch Throwable t
+      (warn "could not submit a \"collecting stats\" task via hazelcast instance [" instance "]: " (.getMessage t)))))
 
 ;; adds a string kv pair to the local member of this hazelcast instance
 (defn add-member-attr [instance k v]
-  (-> instance 
+  (-> instance
     (.getCluster)
     (.getLocalMember)
     (.setStringAttribute k v)))
 
 (defn local-member-by-instance [instance]
-  (-> instance 
+  (-> instance
     (.getCluster)
     (.getLocalMember)))
 
 (defn members-by-instance [instance]
-  (-> instance 
+  (-> instance
     (.getCluster)
     (.getLocalMember)))
 
-(defn hz-map 
-  ([m]
-    (hz-map (name m) (hz-instance)))
-  ([m instance]
-    (.getMap instance (name m))))
+(defn hz-map
+  [instance m]
+  (.getMap instance (name m)))
 
-(defn hz-mmap 
-  ([m]
-    (hz-mmap (name m) (hz-instance)))
-  ([m instance]
-    (.getMultiMap instance (name m))))
+(defn hz-mmap
+  [instance m]
+  (.getMultiMap instance (name m)))
 
 (defn hz-queue
-  ([m]
-    (hz-queue (name m) (hz-instance)))
-  ([m instance]
-    (.getQueue instance (name m))))
+  [instance m]
+  (.getQueue instance (name m)))
 
 (defn ^ITopic hz-reliable-topic
-  ([t]
-    (hz-reliable-topic (name t) (hz-instance)))
-  ([t instance]
-    (.getReliableTopic instance (name t))))
+  [instance t]
+  (.getReliableTopic instance (name t)))
 
 (defn message-listener [f]
   (when (fn? f)
-    (reify 
+    (reify
       MessageListener
         (^void onMessage [this ^Message msg]
           (f (.getMessageObject msg))))))     ;; TODO: {:msg :member :timestamp}
@@ -163,12 +131,12 @@
 (defn reliable-message-listener [f {:keys [start-from store-seq loss-tolerant? terminal?]
                                     :or {start-from -1 store-seq identity loss-tolerant? false terminal? true}}]
   (when (fn? f)
-    (reify 
+    (reify
       ReliableMessageListener
         (^long retrieveInitialSequence [this] start-from)
         (^void storeSequence [this ^long sq] (store-seq sq))
         (^boolean isLossTolerant [this] loss-tolerant?)
-        (^boolean isTerminal [this ^Throwable failure] 
+        (^boolean isTerminal [this ^Throwable failure]
           (throw failure)
           terminal?)
       MessageListener
@@ -213,18 +181,17 @@
 (defn shutdown-client [instance]
   (HazelcastClient/shutdown instance))
 
-(defn shutdown []
-  (let [instance (hz-instance)]
-    (when instance
-      (.shutdown instance))))
+(defn shutdown [instance]
+  (when instance
+    (.shutdown instance)))
 
-(defn put! 
+(defn put!
   ([^IMap m k v f]
     (put! m k (f v)))
   ([^IMap m k v]
     (.put m k v)))
 
-(defn cget 
+(defn cget
   ([^IMap m k f]
     (f (cget m k)))
   ([^IMap m k]
@@ -239,7 +206,7 @@
 (defn delete! [^IMap m k]
   (.delete m k))
 
-(defn add-index 
+(defn add-index
   ([^IMap m index]
    (add-index m index false))
   ([^IMap m index ordered?]
@@ -264,7 +231,7 @@
   Pageable
   (next-page [_]
              (.nextPage pred)
-             (run-query m where as pred))) 
+             (run-query m where as pred)))
 
 (def comp-keys
   (comparator (fn [a b]
@@ -301,21 +268,21 @@
 
 (defn entry-added-listener [f]
   (when (fn? f)
-    (reify 
+    (reify
       EntryAddedListener
         (^void entryAdded [this ^EntryEvent entry]
           (f (.getKey entry) (.getValue entry) (.getOldValue entry))))))
 
 (defn entry-removed-listener [f]
   (when (fn? f)
-    (reify 
+    (reify
       EntryRemovedListener
         (^void entryRemoved [this ^EntryEvent entry]
           (f (.getKey entry) (.getValue entry) (.getOldValue entry))))))
 
 (defn entry-updated-listener [f]
   (when (fn? f)
-    (reify 
+    (reify
       EntryUpdatedListener
         (^void entryUpdated [this ^EntryEvent entry]
           (f (.getKey entry) (.getValue entry) (.getOldValue entry))))))
@@ -337,13 +304,10 @@
   (call [_] (fun)))
 
 (defn- task-args [& {:keys [members instance es-name]
-                   :or {members :any
-                        instance (if (client-instance?)
-                                  (client-instance)
-                                  (hz-instance))
-                        es-name :default}
-                   :as args}]
-  (assoc args :exec-svc (.getExecutorService instance (name es-name))))
+                     :or {members :any
+                          es-name :default}
+                     :as args}]
+  (assoc args :exec-svc (.gettExecutorService instance (name es-name))))
 
 (defn task [fun & args]
   (let [{:keys [exec-svc members]} (apply task-args args)]
@@ -357,11 +321,11 @@
       (.submitToAllMembers exec-svc (Task. fun))
       (.submit exec-svc (Task. fun)))))
 
-(defn mtake [n m]
-  (into {} (take n (hz-map m))))
+(defn mtake [instance n m]
+  (into {} (take n (hz-map instance m))))
 
-(defn ->mtake [n mname]                 ;; for clients
-  @(ftask (partial mtake n mname)))
+(defn ->mtake [instance n mname]                 ;; for clients
+  @(ftask (partial mtake instance n mname)))
 
 ;; to be a bit more explicit about these tasks (their futures) problems
 ;; good idea to call it before executing distributed tasks

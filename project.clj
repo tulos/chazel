@@ -4,17 +4,16 @@
   :license {:name "Eclipse Public License"
             :url "http://www.eclipse.org/legal/epl-v10.html"}
 
-  :source-paths ["src" "src/chazel"]
+  :source-paths ["src/chazel"]
 
   :profiles {:dev {:repl-options {:init-ns chazel}
                    :resource-paths ["dev-resources" "dev"]
                    :aot [chazel.jedis]}}
 
-  :dependencies [[org.clojure/clojure "1.8.0"]
-                 [org.clojure/tools.logging "0.3.1"]
-                 [com.hazelcast/hazelcast "3.6.2"]
-                 [com.hazelcast/hazelcast-client "3.6.2"]
+  :dependencies [[org.clojure/tools.logging "0.3.1"]
+                 [com.hazelcast/hazelcast "3.7.1"]
+                 [com.hazelcast/hazelcast-client "3.7.1"]
                  [org.hface/hface-client "0.1.3"]
-                 [cheshire "5.6.1"]
-                 [com.cognitect/transit-clj "0.8.275"]
+                 [cheshire "5.6.3"]
+                 [com.cognitect/transit-clj "0.8.290"]
                  [clj-wallhack "1.0.1"]])
